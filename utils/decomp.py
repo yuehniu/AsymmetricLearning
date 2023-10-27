@@ -18,7 +18,8 @@ def svd_approx( x, r, iters=2, eps=1e-6 ):
     while i < r:
         u_i = torch.randn( b, c, 1 ).cuda()
         u_i = torch.nn.functional.normalize( u_i, dim=1 )
-        v_i = torch.mean( x_copy, dim=1, keepdim=True ).transpose( 1, 2 )
+        # v_i = torch.mean( x_copy, dim=1, keepdim=True ).transpose( 1, 2 )
+        v_i = torch.randn( b, 1, h*w ).cuda().transpose( 1, 2 )
 
         # Alternate optimization
         for j in range( iters ):
@@ -40,7 +41,7 @@ def svd_approx( x, r, iters=2, eps=1e-6 ):
     x_v = torch.transpose( x_v, 0, 1 )  # --> [ b, r, h, w ]
     x_residual = x_copy.view( b, c, h, w )
 
-    # print( 'approx svd: ', torch.norm( x_residual ) ** 2 / torch.norm( x ) ** 2 )
+    # print( 'approx svd: ', torch.norm( x_residual ) ** 2 / torch.norm( x ) ** 2 ); quit()
 
     return x_u, x-x_residual, x_residual
 

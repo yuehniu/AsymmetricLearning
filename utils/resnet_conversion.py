@@ -6,8 +6,9 @@ import torch.nn as nn
 from model.layer_decomp import AsymSVD
 from model.layer_dct import AsymDCT
 from model.layer_quant import RandQuant
+from model.layer_merge import MergeLogits
 from model.resnet import BasicBlock
-from model.model_lowrank import resnet6, resnet8
+from model.model_lowrank import resnet6, resnet8, resnet12
 
 
 class ResNet_Asym( nn.Module ):
@@ -15,34 +16,49 @@ class ResNet_Asym( nn.Module ):
 
     def __init__( self, backbone, m_lowrank, m_residual, svd_layer, dct_layer, quant_layer ):
         super( ResNet_Asym, self ).__init__()
-        self.backbone   = backbone
-        self.svd_layer, self.dct_layer, self.quant_layer = svd_layer, dct_layer, quant_layer
-        self.m_lowrank  = m_lowrank
-        self.m_residual = m_residual
+        self.backbone    = backbone
+        self.svd_layer   = svd_layer
+        self.dct_layer   = dct_layer
+        self.quant_layer = quant_layer
+        self.m_lowrank   = m_lowrank
+        self.m_residual  = m_residual
+        self.merge_layer = MergeLogits()
+
+        self.lr_only = False  # if train with low-rank model only
+
+        # self.scale = nn.Parameter( torch.FloatTensor( [ 1.0 ] ) )
 
         # self._initialize_weights( initmethod )
 
     def forward( self, x ):
-        x_backbone = self.backbone( x )
-        x_svd, x_svd_res = self.svd_layer( x_backbone )
+        x_bb = self.backbone( x )
+
+        x_svd, x_svd_res = self.svd_layer( x_bb )
         if self.dct_layer:
             x_dct, x_dct_res = self.dct_layer( x_svd )
         else:
             x_dct, x_dct_res = x_svd, 0
-        x_residual = x_svd_res + x_dct_res
+        x_res = x_svd_res + x_dct_res
+
+        # print( 'l1 norm, x_bb: ', torch.norm( x_bb[ 0 ], 1 ) )
+        # print( 'l1 norm, x_res: ', torch.norm( x_res[ 0 ], 1 ) ); quit()
+        # print( 'res energy ratio: ', torch.norm( x_res[ 0 ] ) ** 2 / torch.norm( x_bb[ 0 ] ) ** 2 ); quit()
+
         if self.quant_layer:
-            x_residual_quant = self.quant_layer( x_residual )
+            x_res_quant = self.quant_layer( x_res )
         else:
-            x_residual_quant = x_residual
+            x_res_quant = x_res
 
-        out_lowrank = self.m_lowrank( x_dct )
+        out_lwr = self.m_lowrank( x_dct )
 
-        if self.m_residual:
-            out_residual = self.m_residual( x_residual_quant )
+        if self.m_residual and not self.lr_only:
+            out_res = self.m_residual( x_res_quant )
+            out = self.merge_layer( out_lwr, out_res )
         else:
-            out_residual = 0.0
+            out_res = torch.zeros_like( out_lwr )
+            out = out_lwr
 
-        return out_lowrank+out_residual, x_backbone, x_svd, x_dct
+        return out, out_res, x_bb, x_svd, x_dct
 
     def _initialize_weights( self, initmethod ):
         for m in self.modules():
@@ -66,7 +82,7 @@ class ResNet_Asym( nn.Module ):
                 m.bias.data.zero_()
 
 
-def resnet_asym( model, dataset, split_layer, svd, r, dct, quant, sigma ):
+def resnet_asym( model, dataset, split_layer, svd, r, dct, quant, sigma, p ):
     # convert an original model into three sub-models:
     #    - backbone model
     #    - m_lowrank: read low-rank data as inputs
@@ -81,6 +97,7 @@ def resnet_asym( model, dataset, split_layer, svd, r, dct, quant, sigma ):
     # - dct: if add dct layer
     # - quant: if add quantization layer
     # - sigma: noise level
+    # - p: sampling ratio
 
     lyr_indx = 0  # convolution layer index
     is_backbone, scaling = True, 1
@@ -148,12 +165,28 @@ def resnet_asym( model, dataset, split_layer, svd, r, dct, quant, sigma ):
 
     __convert( model )
 
-    backbone = nn.Sequential( *backbone )
-    m_lowrank, m_residual = resnet8( inplanes=out_channels, rank=r, num_classes=num_classes, has_dct=dct ), None
-    svd_layer, dct_layer, quant_layer = None, None, None
+    backbone   = nn.Sequential( *backbone )
+    if len( m_residual ) == 11:
+        M1  = resnet8( inplanes=out_channels, rank=r, num_classes=num_classes, has_dct=dct )
+    else:
+        M1 = resnet12( inplanes=out_channels, rank=r, num_classes=num_classes, has_dct=dct )
+    M2 = None
+
+    svd_layer, dct_layer, quant_layer, fc_layer = None, None, None, None
     if svd: svd_layer = AsymSVD( r )
     if dct: dct_layer = AsymDCT()
-    if quant: quant_layer = RandQuant( sigma=sigma )
-    model_new = ResNet_Asym( backbone, m_lowrank, m_residual, svd_layer, dct_layer, quant_layer )
+    if quant:
+        quant_layer = RandQuant( sigma=sigma, p=p )
+
+        conv_map = nn.Conv2d( 1, out_channels, kernel_size=3, stride=1, padding=1, bias=False )
+        nn.init.kaiming_normal_( conv_map.weight, mode='fan_out', nonlinearity='relu' )
+
+        bn_map, relu_map = nn.BatchNorm2d( out_channels ), nn.ReLU( inplace=True )
+        nn.init.constant_( bn_map.weight, 1 )
+        nn.init.constant_( bn_map.bias, 0 )
+
+        M2 = nn.Sequential( *[ conv_map, bn_map, relu_map, *m_residual]  )
+
+    model_new = ResNet_Asym( backbone, M1, M2, svd_layer, dct_layer, quant_layer )
 
     return model_new

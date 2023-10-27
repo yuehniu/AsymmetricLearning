@@ -1,33 +1,26 @@
 python=python
 
 # --> training hparams
-dataset=cifar100
+dataset=imagenet
 model=resnet18
 lr=0.1
-wd=2e-4
-regcoeff=1e-3
-regmethod="orth"
-seed=3
-gpu="0"
+wd=1e-4
+regcoeff=5e-4
+regmethod="l2"
+seed=2
+gpu="0,1,2,3"
 
 svd=1
 rank=8
 dct=1
 quant=1
-epsilon=1000
-dpdata=0
-p=0.001
+p=0.0002
+epsilon=2
 moreopts=" "
 
 logdir="./log/acc/${dataset}_${model}/orig/lr${lr}_${regmethod}_${wd}"
-savedir="./checkpoints/running/${dataset}_${model}"
 if [ $dataset == "imagenet"  ]; then
-  moreopts+=" --epochs=100 --batch-size=512"
-fi
-
-if [ $dpdata -eq 1 ]; then
-  moreopts+=" --dpdata --p=${p}"
-  logdir="./log/acc/${dataset}_${model}/dpdata/lr${lr}_${regmethod}_${wd}"
+  moreopts+=" --epochs=100 --batch-size=256"
 fi
 
 if [ $svd -eq 1 ]; then
@@ -51,7 +44,7 @@ fi
 if [ $quant -eq 1 ]; then
   moreopts+="  --quant --epsilon=${epsilon} --p=${p}"
   if [ $regmethod == "l2" ]; then
-    logdir="./log/acc/${dataset}_${model}/asym/NsyGrad0.02_${lr}_${regmethod}_${wd}_svd${rank}_dct32-16_quant${noise}_M2large"
+    logdir="./log/acc/${dataset}_${model}/asym/BBfreeze_${regmethod}_${wd}_svd${rank}_ep${epsilon}_M2-1_seed${seed}"
   else
     logdir="./log/acc/${dataset}_${model}/asym/BBfreeze_${regmethod}_${wd}-${regcoeff}_svd${rank}_ep${epsilon}_M2-1_seed${seed}"
   fi
@@ -60,14 +53,11 @@ fi
 if [ -d $logdir ]; then
     rm -r $logdir
 fi
-if [ ! -d $savedir ]; then
-    mkdir -p $savedir
-fi
 mkdir -p $logdir
 
 CUDA_VISIBLE_DEVICES=$gpu $python main.py  ${moreopts} \
   --cuda \
   --model=$model --dataset=$dataset \
-  --lr=$lr --wd=$wd --seed=${seed} \
+  --lr=$lr --wd=$wd --seed=${seed}\
   --reg=$regmethod --regcoeff=$regcoeff \
   --logdir=$logdir --save-dir=${savedir}

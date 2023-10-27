@@ -1,3 +1,5 @@
+import numpy as np
+
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -34,3 +36,28 @@ def cal_acc( output, target, topk=(1,) ):
         correct_k = correct[ :k ].view( -1 ).float().sum( 0 )
         acc.append( correct_k.mul_( 100.0 / batch_size ) )
     return acc
+
+
+def cal_acc_f1( preds, labels, tot_tp, tot_fp, tot_tn, tot_fn ):
+    tp = np.logical_and(
+        np.equal(labels, True), np.equal( preds, True)
+    ).astype(np.int)
+    fp = np.logical_and(
+        np.equal(labels, False), np.equal( preds, True)
+    ).astype(np.int)
+    tn = np.logical_and(
+        np.equal(labels, False), np.equal( preds, False)
+    ).astype(np.int)
+    fn = np.logical_and(
+        np.equal(labels, True), np.equal( preds, False)
+    ).astype(np.int)
+
+    if tot_tp is None:
+        tot_tp, tot_fp, tot_tn, tot_fn = tp, fp, tn, fn
+    else:
+        tot_tp = np.append( tot_tp, tp )
+        tot_fp = np.append( tot_fp, fp )
+        tot_tn = np.append( tot_tn, tn )
+        tot_fn = np.append( tot_fn, fn )
+
+    return tot_tp, tot_fp, tot_tn, tot_fn

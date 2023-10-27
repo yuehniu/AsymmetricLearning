@@ -1,13 +1,11 @@
 # This is the main function of the project
-import math
 import sys
 import time
 import torch
 import logging
-import numpy as np
-import random
 
 from torch.utils.tensorboard import SummaryWriter
+from torch.utils import mkldnn as mkldnn
 from model import vgg, resnet, resnet_imagenet
 from model.model_lowrank import resnet6, resnet8
 from utils import vgg_conversion, resnet_conversion
@@ -52,10 +50,9 @@ def main():
             model = vgg_conversion.vgg_asym( model, 1, args.rank, initmethod=args.init )
         elif 'resnet' in args.model:
             model = resnet_conversion.resnet_asym(
-                model, args.dataset, 1, args.svd, args.rank, args.dct, args.quant, args.epsilon, args.p
+                model, args.dataset, 1, args.svd, args.rank, args.dct, args.quant, args.noise, args.p
             )
     if args.cuda:
-        model = torch.nn.DataParallel( model )
         model.cuda()
 
     # print( model ); quit()
@@ -68,79 +65,35 @@ def main():
         crit.cuda()
 
     """SGD optimizer"""
-    if args.svd and args.quant:
-        bb_params = [ {
-            'params': model.module.backbone.parameters(), 'weight_decay': args.wd
-        } ]
-        m_lr_params = [ {
-            'params': model.module.m_lowrank.parameters(), 'weight_decay': args.wd
-        } ]
-        m_res_params = [ {
-            'params': model.module.m_residual.parameters(), 'weight_decay': args.wd
-        } ]
-        opt_bb = torch.optim.SGD( bb_params, args.lr, momentum=args.momentum )
-        opt_m_lr = torch.optim.SGD( m_lr_params, args.lr, momentum=args.momentum )
-        opt_m_res = torch.optim.SGD( m_res_params, args.lr, momentum=args.momentum )
-        lr_scheduler_bb = torch.optim.lr_scheduler.CosineAnnealingLR( opt_bb, args.epochs, eta_min=0.00001 )
-        lr_scheduler_m_lr = torch.optim.lr_scheduler.CosineAnnealingLR( opt_m_lr, args.epochs, eta_min=0.00001 )
-        lr_scheduler_m_res = torch.optim.lr_scheduler.CosineAnnealingLR( opt_m_res, args.epochs, eta_min=0.00001 )
-    else:
-        opt = torch.optim.SGD(
-            model.parameters(),
-            args.lr, momentum=args.momentum, weight_decay=args.wd,
-        )
-        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR( opt, args.epochs, eta_min=0.00001 )
-
-    """ADAM optimizer
-    opt = torch.optim.AdamW(
+    opt = torch.optim.SGD(
         model.parameters(),
-        lr=args.lr, weight_decay=args.wd,
+        args.lr, momentum=args.momentum, weight_decay=args.wd,
     )
-    """
+
+    # define learning rate scheduler
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR( opt, args.epochs, eta_min=0.00001 )
 
     # ---------------------------------------------- train ---------------------------------------------- #
 
+    torch.set_num_threads( 32 )
+    # print( torch.get_num_threads() )
+    # print( torch.__config__.parallel_info() ); quit()
     best_acc, best_ep = 0.0, 0
     writer = SummaryWriter( log_dir=args.logdir )
     for ep in range( 0, args.epochs ):
-        """-------- In Asym mode: freeze backbone when training the residual model --------"""
-        if args.svd and args.quant:
-            epochs_lr = args.epochs // 3
-            if ep < epochs_lr:
-                logging.info( '[AsymML TRAIN] low-rank mode' )
-                model.module.lr_only = True
-                model.module.svd_layer.freeze = False
-                acc_train, loss_train, loss_reg = train_1_epoch(
-                    model, train_dl, crit, ep, opt=opt_bb, opt1=opt_m_lr, opt2=None
-                )
-            else:
-                logging.info( '[AsymML TRAIN] asym mode with freezing backbone' )
-                model.module.lr_only = False
-                model.module.svd_layer.freeze = True
-                acc_train, loss_train, loss_reg = train_1_epoch(
-                    model, train_dl, crit, ep, opt=None, opt1=opt_m_lr, opt2=opt_m_res
-                )
-            lr_scheduler_bb.step()
-            lr_scheduler_m_lr.step()
-            lr_scheduler_m_res.step()
-        else:
-            acc_train, loss_train, loss_reg = train_1_epoch( model, train_dl, crit, ep, opt=opt )
-            lr_scheduler.step()
+        _, _, _, time_bb, time_m1, time_m2, time_svd, time_dct, time_quant, time_backward = \
+            train_1_epoch( model, train_dl, crit, opt, ep )
+        # acc_val, loss_val, ratio_svd, ratio_dct = validate( model, val_dl,  crit, ep )
+        lr_scheduler.step()
 
-        acc_val, loss_val, ratio_svd, ratio_dct = validate( model, val_dl,  crit, ep )
-
-        if best_acc < acc_val:
-            best_acc, best_ep = acc_val, ep
-            """torch.save(
-                {
-                    'model_state_dict': model.state_dict(),
-                },
-                args.save_dir + '/model.pt'
-            )"""
-
-        # log progress
-        add_log( writer, model, loss_train, acc_train, loss_val, acc_val, loss_reg, ratio_svd, ratio_dct, ep )
-
+        logging.info( '[AsymML Runtime Stats] BB: {:.3f}, \t M1: {:.3f}, \t M2: {:.3f}'.format(
+            time_bb.avg, time_m1.avg, time_m2.avg)
+        )
+        logging.info( '[AsymML Runtime Stats] SVD: {:.3f}, \t DCT: {:.3f}, \t Quant: {:.3f}'.format(
+            time_svd.avg, time_dct.avg, time_quant.avg )
+        )
+        logging.info( '[AsymML Runtime Stats] Backward: {:.3f}'.format( time_backward.avg ) )
+        quit()
     logging.info( '[AsymML Test Stats] Best acc: {:.3f} at {} Epoch'.format( best_acc, best_ep ) )
     writer.close()
 
@@ -188,43 +141,65 @@ def create_dl( trainset, valset ):
     return train_dl, val_dl
 
 
-def train_1_epoch( model, dl, crit, epoch, opt=None, opt1=None, opt2=None ):
+def train_1_epoch( model, dl, crit, opt, epoch ):
     # - model: model to be trained
     # - dl: train data loader
     # - crit: loss function
     # - opt: optimizer
     # - epoch: current epoch
 
-    # set_seed( args.seed )
-
     time_1_batch, time_data = AverageMeter(), AverageMeter()
+    time_svd, time_dct, time_quant = AverageMeter(), AverageMeter(), AverageMeter()
+    time_bb, time_m1, time_m2 = AverageMeter(), AverageMeter(), AverageMeter()
+    time_backward = AverageMeter()
     avg_loss, avg_acc, avg_reg = AverageMeter(), AverageMeter(), AverageMeter()
 
     model.train()
     end = time.time()
     for i, ( input, target ) in enumerate( dl ):
+        if i == 500:
+            break
         time_data.update( time.time() - end )
 
         # ---------------------------------------- fwd/bwd/opt:beg ---------------------------------------- #
         # TODO: get both 'out' and 'out_res', and perform loss.backward twice
-        if opt: opt.zero_grad()
-        if opt1: opt1.zero_grad()
-        if opt2: opt2.zero_grad()
-
+        opt.zero_grad()
         if args.cuda:
             input, target = input.cuda(), target.cuda()
 
-        if args.dpdata:
-            b = input.size( 0 )
-            input_norm = torch.norm( input, p='fro' ) / math.sqrt( b )
-            sigma = args.p * input_norm / 1.5
-            noise = torch.randn_like( input ) * sigma
-
-            input += noise
-
         if args.svd or args.dct:
-            output, output_res, _, _, _ = model( input )
-            loss_cls = crit( output, target )
+            t_bb_beg = time.time()
+            x_bb = model.backbone( input )
+            time_bb.update( time.time() - t_bb_beg )
+
+            t_svd_beg = time.time()
+            x_svd, x_svd_res = model.svd_layer( x_bb )
+            time_svd.update( time.time() - t_svd_beg )
+
+            t_dct_beg = time.time()
+            x_dct, x_dct_res = model.dct_layer( x_svd )
+            time_dct.update( time.time() - t_dct_beg )
+            x_res = x_svd_res + x_dct_res
+
+            t_quant_beg = time.time()
+            x_res_quant = model.quant_layer( x_res )
+            time_quant.update( time.time() - t_quant_beg )
+
+            x_dct = x_dct.cpu()
+            model.m_lowrank.cpu()
+            torch.cuda.synchronize()
+            t_m1_beg = time.time()
+            out_lwr = model.m_lowrank( x_dct )
+            time_m1.update( time.time() - t_m1_beg )
+            out_lwr = out_lwr.cuda()
+
+            t_m2_beg = time.time()
+            out_res = model.m_residual( x_res_quant )
+            time_m2.update( time.time() - t_m2_beg )
+
+            output = model.merge_layer( out_lwr, out_res )
+
+            loss_cls = crit(output, target)
             # loss_cls_res = crit( output_res, target )
             # loss_cls += loss_cls_res
         else:
@@ -239,11 +214,11 @@ def train_1_epoch( model, dl, crit, epoch, opt=None, opt1=None, opt2=None ):
             loss_reg = add_convorth_reg( model, args.regcoeff, args.svd )
         loss = loss_cls + loss_reg
 
+        time_backward_beg = time.time()
         loss.backward()
+        time_backward.update( time.time() - time_backward_beg )
 
-        if opt: opt.step()
-        if opt1: opt1.step()
-        if opt2: opt2.step()
+        opt.step()
         # ---------------------------------------- fwd/bwd/opt:end ---------------------------------------- #
 
         """collect training stats"""
@@ -263,7 +238,7 @@ def train_1_epoch( model, dl, crit, epoch, opt=None, opt1=None, opt2=None ):
                 )
             )
 
-    return avg_acc.avg, avg_loss.avg, avg_reg.avg
+    return avg_acc.avg, avg_loss.avg, avg_reg.avg, time_bb, time_m1, time_m2, time_svd, time_dct, time_quant, time_backward
 
 
 def validate( model, dl, crit, epoch ):
@@ -283,7 +258,7 @@ def validate( model, dl, crit, epoch ):
             if args.svd or args.dct:
                 output,output_res, x_backbone, x_svd, x_dct = model( input )
                 ratio_svd += ( torch.norm(x_svd)**2 / torch.norm( x_backbone)**2 )
-                ratio_dct += ( torch.norm(x_dct)**2 / torch.norm( x_backbone )**2 )
+                ratio_dct += ( torch.norm(x_dct)**2 / torch.norm( x_svd)**2 )
             else:
                 output = model( input )
             loss = crit( output, target )
@@ -298,41 +273,6 @@ def validate( model, dl, crit, epoch ):
     """
 
     return avg_acc.avg, avg_loss.avg, ratio_svd/len( dl ), ratio_dct/len( dl )
-
-
-def add_log( writer, model, loss_train, acc_train, loss_val, acc_val, loss_reg, ratio_svd, ratio_dct, ep ):
-
-    logging.info('[AsymML TRAIN] Epoch: [{0}/{1}]\t Loss: {2:.3f}, Accuracy: {3:.3f}'.format(
-        ep, args.epochs, loss_train, acc_train ) )
-    logging.info('[AsymML VAL  ] Epoch: [{0}/{1}]\t Loss: {2:.3f}, Accuracy: {3:.3f}'.format(
-        ep, args.epochs, loss_val, acc_val ) )
-    writer.add_scalar( 'loss/train', loss_train, ep )
-    writer.add_scalar( 'loss/val', loss_val, ep )
-    writer.add_scalar( 'loss/reg', loss_reg, ep )
-    writer.add_scalar( 'acc/train', acc_train, ep )
-    writer.add_scalar( 'acc/val', acc_val, ep )
-
-    # profile energy leakage
-    if args.svd or args.dct:
-        writer.add_scalar( 'stats/svd_ratio', ratio_svd, ep )
-        writer.add_scalar( 'stats/dct_ratio', ratio_dct, ep )
-
-    # parameter norm
-    pnorm = 0.0
-    for m in model.parameters():
-        if m.requires_grad:
-            pnorm += torch.norm( m ) ** 2
-    writer.add_scalar( 'stats/pnorm', torch.sqrt( pnorm ), ep )
-
-    # dct energy ratio
-    # writer.add_scalar( 'stats/dct_ratio', torch.sqrt( e_dct_ratio ), ep )
-
-
-def set_seed( seed: int ):
-    random.seed( seed )
-    np.random.seed( seed )
-    torch.manual_seed( seed )
-    torch.cuda.manual_seed_all( seed )
 
 
 if __name__ == '__main__':

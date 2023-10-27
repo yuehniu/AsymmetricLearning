@@ -10,7 +10,7 @@ from utils.decomp import svd_approx, svd_exact, svd_lowrank
 class asym_svd( torch.autograd.Function ):
 
     @staticmethod
-    def forward( ctx, input, r ):
+    def forward( ctx, input, r, freeze ):
         # - ctx:
         # - input: input IR
         # - r: rank
@@ -19,7 +19,7 @@ class asym_svd( torch.autograd.Function ):
         u, x_lowrank, x_residual = svd_approx( input, r )
         # u, x_lowrank, x_residual = svd_lowrank( input, r )
 
-        ctx.constant = r
+        ctx.constant = freeze
         ctx.save_for_backward( u )  # coefficient for orthogonal channels
 
         return x_lowrank, x_residual
@@ -37,21 +37,27 @@ class asym_svd( torch.autograd.Function ):
         _, c, _ = u.shape
         m_grad1_x = torch.matmul( u, m_grad1 ).view( b, c, h, w )
         """
+        freeze = ctx.constant
 
         #  combine gradients
-        grad_in = grad_out1 + grad_out2
+        if freeze:
+            grad_in = torch.zeros_like( grad_out1 )
+        else:
+            grad_in = grad_out1 + grad_out2
 
-        return grad_in, None
+        return grad_in, None, None
 
 
 #  define an asymmetric decomposition layer
 class AsymSVD( nn.Module ):
 
-    def __init__( self, r ):
+    def __init__( self, r, freeze=False ):
         #  - r: rank
+        #  - freeze: freeze the gradient to backbone
 
         super( AsymSVD, self ).__init__()
         self.r = r
+        self.freeze = freeze
 
     def forward( self, input ):
-        return asym_svd.apply( input, self.r )
+        return asym_svd.apply( input, self.r, self.freeze )

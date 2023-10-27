@@ -56,7 +56,7 @@ def add_orth_reg( model, alpha, svd=False ):
 
         elif len( w.shape ) == 4:  # conv layer
             co, ci, k, _ = w.shape
-            if svd and co == ci * 2 and co <= 256 and k > 1:
+            if svd and co == ci * 2 and co <= 256 and k > 1 and 'm_lowrank' in name:
                 loss_orth += ( alpha * norm_diff( w ) )
 
     return loss_orth

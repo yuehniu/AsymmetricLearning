@@ -108,12 +108,12 @@ class ResNet(nn.Module):
         # self.relu = nn.PReLU( num_parameters=64 )
         self.maxpool = nn.MaxPool2d( kernel_size=3, stride=2, padding=1 )
 
-        self.layer1 = self._make_layer( block, 64, layers[0], stride=1 )
-        self.layer2 = self._make_layer( block, 128, layers[1], stride=2 )
-        self.layer3 = self._make_layer( block, 256, layers[2], stride=2 )
-        self.layer4 = self._make_layer( block, 512, layers[3], stride=2 )
+        self.layer1 = self._make_layer( block, 80, layers[0], stride=1 )   # 64/80
+        self.layer2 = self._make_layer( block, 160, layers[1], stride=2 )  # 128/160
+        self.layer3 = self._make_layer( block, 320, layers[2], stride=2 )  # 256/320
+        self.layer4 = self._make_layer( block, 640, layers[3], stride=2 )  # 512/640
         self.avgpool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Linear(512 * block.expansion, num_classes)
+        self.fc = nn.Linear( 640 * block.expansion, num_classes )
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -178,7 +178,7 @@ def resnet18(pretrained=False, **kwargs):
     return model
 
 
-def resnet34(pretrained=False, num_classes=1000, **kwargs):
+def resnet34(pretrained=False, **kwargs):
     """Constructs a ResNet-34 model.
 
     Args:

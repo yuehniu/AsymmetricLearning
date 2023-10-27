@@ -11,11 +11,14 @@ class Bottleneck( nn.Module ):
         super( Bottleneck, self ).__init__()
         self.conv1 = nn.Conv2d( inplanes, planes, kernel_size=3, stride=1, padding=1, bias=False )
         self.bn1   = nn.BatchNorm2d( planes )
+        # self.relu1 = nn.PReLU( num_parameters=planes )
         self.conv2 = nn.Conv2d( planes, 2 * planes, kernel_size=3, stride=stride, padding=1, bias=False )
         self.bn2   = nn.BatchNorm2d( 2 * planes )
+        # self.relu2 = nn.PReLU( num_parameters=2*planes )
         self.conv3 = nn.Conv2d( 2 * planes, planes * self.expansion, kernel_size=1, bias=False )
         self.bn3   = nn.BatchNorm2d( planes * self.expansion )
         self.relu  = nn.ReLU( inplace=True )
+        # self.relu3 = nn.PReLU( num_parameters=planes * self.expansion )
         self.downsample = downsample
         self.stride = stride
 
@@ -165,7 +168,14 @@ def resnet6( pretrained=False, **kwargs ):
 def resnet8( pretrained=False, **kwargs ):
     """Constructs a ResNet-6 model."""
 
-    model = ResNetLowRank( Bottleneck, [2, 2, 2, 2], **kwargs )
+    model = ResNetLowRank( Bottleneck, [ 2, 2, 2, 2 ], **kwargs )
+    return model
+
+
+def resnet12( pretrained=False, **kwargs ):
+    """Constructs a ResNet-6 model."""
+
+    model = ResNetLowRank( Bottleneck, [ 3, 4, 6, 3 ], **kwargs )
     return model
 
 

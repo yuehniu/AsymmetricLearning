@@ -41,6 +41,20 @@ dataset_CIFAR100_val = datasets.CIFAR100(
         normalize,
     ])
 )
+evens = list( range( 0, len( dataset_CIFAR100_train ), 2 ) )
+odds = list( range( 1, len( dataset_CIFAR100_train ), 2 ) )
+dataset_CIFAR100_sub1 = torch.utils.data.Subset( dataset_CIFAR100_train, evens )
+dataset_CIFAR100_sub2 = torch.utils.data.Subset( dataset_CIFAR100_train, odds )
+
+dataset_Pub = datasets.ImageFolder(
+    root='./data/imagenet/val',
+    transform=transforms.Compose([
+        transforms.Resize( 36 ),
+        transforms.CenterCrop( 32 ),
+        transforms.ToTensor(),
+        normalize,
+    ])
+)
 
 dataset_ImageNet_train = datasets.ImageFolder(
     root='./data/imagenet/train',

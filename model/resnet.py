@@ -104,12 +104,12 @@ class ResNet(nn.Module):
         # self.relu = nn.ReLU( inplace=True )
         self.relu = nn.PReLU( num_parameters=64 )
         # self.relu = nn.SELU()
-        self.layer1 = self._make_layer( block, 64, layers[0], stride=1 )
-        self.layer2 = self._make_layer( block, 128, layers[1], stride=2 )
-        self.layer3 = self._make_layer( block, 256, layers[2], stride=2 )
-        self.layer4 = self._make_layer( block, 512, layers[3], stride=2 )
+        self.layer1 = self._make_layer( block, 64, layers[0], stride=1 )   # 64/96
+        self.layer2 = self._make_layer( block, 128, layers[1], stride=2 )  # 128/192
+        self.layer3 = self._make_layer( block, 256, layers[2], stride=2 )  # 256/384
+        self.layer4 = self._make_layer( block, 512, layers[3], stride=2 )  # 512/768
         self.avgpool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Linear(512 * block.expansion, num_classes)
+        self.fc = nn.Linear( 512 * block.expansion, num_classes )
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
