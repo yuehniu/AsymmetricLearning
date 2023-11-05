@@ -30,6 +30,11 @@ numpy=1.21
 ### Run
 
 #### On CIFAR
+Before running, remember to config DCT in layer_dct.py, line 9-10.
+```python
+in_sz, s_in_sz = 32, 16
+M, m = 16, 8
+```
 
 ```bash
 # Training hparams are included in run.sh
@@ -37,6 +42,11 @@ bash run.sh
 ```
 
 #### On ImageNet
+Before running, remember to config DCT in layer_dct.py, line 9-10.
+```python
+in_sz, s_in_sz = 56, 28
+M, m = 14, 7
+```
 
 ```bash
 # Training hparams are included in run_imagenet.sh
